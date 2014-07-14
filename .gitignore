@@ -32,6 +32,7 @@ modules.builtin
 *.lzo
 *.patch
 *.gcno
+*.log
 
 #
 # Top-level generic files
@@ -84,6 +85,3 @@ GTAGS
 *.orig
 *~
 \#*#
-
-# Generated source files
-smd_rpc_sym.c

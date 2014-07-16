@@ -35,6 +35,15 @@ modules.builtin
 *.log
 
 #
+# Skip Kernel Images
+#
+zImage
+zImage-dtb.*
+uImage-dtb.*
+*.dtb
+*.img
+
+#
 # Top-level generic files
 #
 /tags

@@ -13,7 +13,7 @@ THREAD="-j$(grep -c ^processor /proc/cpuinfo)"
 KERNEL="zImage"
 DTBIMAGE="boot.img-dtb"
 BOOTIMAGE="boot.img-zImage"
-DEFCONFIG="cyanogenmod_bacon_defconfig"
+DEFCONFIG="ak_bacon_defconfig"
 
 # Kernel Details
 BASE_AK_VER="ak"

@@ -17,7 +17,7 @@ DEFCONFIG="ak_bacon_defconfig"
 
 # Kernel Details
 BASE_AK_VER="ak"
-VER=".004.onepone"
+VER=".010.onepone"
 AK_VER="$BASE_AK_VER$VER"
 
 # Vars

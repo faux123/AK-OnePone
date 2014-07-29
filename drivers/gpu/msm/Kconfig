@@ -67,7 +67,7 @@ config MSM_KGSL_2D
 
 config MSM_ADRENO_DEFAULT_GOVERNOR
 	string "devfreq governor for the adreno core"
-	default "msm-adreno-tz" if DEVFREQ_GOV_MSM_ADRENO_TZ
+	default "conservative" if DEVFREQ_GOV_CONSERVATIVE
 	default "simple_ondemand"
 	depends on MSM_KGSL
 

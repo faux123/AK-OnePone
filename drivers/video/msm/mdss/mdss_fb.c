@@ -22,6 +22,7 @@
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
+#include <linux/dma-buf.h>
 #include <linux/fb.h>
 #include <linux/init.h>
 #include <linux/ioport.h>
@@ -271,32 +272,61 @@ static ssize_t mdss_fb_get_type(struct device *dev,
 	return ret;
 }
 
-static void mdss_fb_parse_dt(struct msm_fb_data_type *mfd)
+static inline int mdss_fb_validate_split(int left, int right,
+			struct msm_fb_data_type *mfd)
+{
+	int rc = -EINVAL;
+	u32 panel_xres = mfd->panel_info->xres;
+	/* more validate condition could be added if needed */
+	if (left && right) {
+		if (mfd->split_display)
+			panel_xres *= 2;
+
+		if (panel_xres == left + right) {
+			mfd->split_fb_left = left;
+			mfd->split_fb_right = right;
+			rc = 0;
+		}
+	} else {
+		if (mfd->split_display) {
+			mfd->split_fb_left = mfd->split_fb_right = panel_xres;
+			rc = 0;
+		} else {
+			mfd->split_fb_left = mfd->split_fb_right = 0;
+		}
+	}
+
+	return rc;
+}
+
+static void mdss_fb_parse_dt_split(struct msm_fb_data_type *mfd)
 {
 	u32 data[2] = {0};
-	u32 panel_xres;
 	struct platform_device *pdev = mfd->pdev;
 
 	of_property_read_u32_array(pdev->dev.of_node,
 		"qcom,mdss-fb-split", data, 2);
 
-	panel_xres = mfd->panel_info->xres;
-	if (data[0] && data[1]) {
-		if (mfd->split_display)
-			panel_xres *= 2;
+	if (!mdss_fb_validate_split(data[0], data[1], mfd))
+		pr_debug("dt split_left=%d split_right=%d\n", data[0], data[1]);
+}
 
-		if (panel_xres == data[0] + data[1]) {
-			mfd->split_fb_left = data[0];
-			mfd->split_fb_right = data[1];
-		}
-	} else {
-		if (mfd->split_display)
-			mfd->split_fb_left = mfd->split_fb_right = panel_xres;
-		else
-			mfd->split_fb_left = mfd->split_fb_right = 0;
+static ssize_t mdss_fb_store_split(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t len)
+{
+	u32 data[2] = {0};
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+
+	if (2 != sscanf(buf, "%d %d", &data[0], &data[1])) {
+		pr_debug("Not able to read split values\n");
+	} else if (!mdss_fb_validate_split(data[0], data[1], mfd)) {
+		mfd->mdss_fb_split_stored = 1;
+		pr_debug("sys split_left=%d split_right=%d\n",
+					data[0], data[1]);
 	}
-	pr_info("split framebuffer left=%d right=%d\n",
-		mfd->split_fb_left, mfd->split_fb_right);
+
+	return len;
 }
 
 #ifdef CONFIG_MACH_OPPO
@@ -388,7 +418,7 @@ static ssize_t mdss_set_panel_calibration(struct device *dev,
 static DEVICE_ATTR(panel_calibration, S_IRUGO | S_IWUSR | S_IWGRP, mdss_get_panel_calibration, mdss_set_panel_calibration);
 #endif
 
-static ssize_t mdss_fb_get_split(struct device *dev,
+static ssize_t mdss_fb_show_split(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	ssize_t ret = 0;
@@ -397,6 +427,19 @@ static ssize_t mdss_fb_get_split(struct device *dev,
 	ret = snprintf(buf, PAGE_SIZE, "%d %d\n",
 		       mfd->split_fb_left, mfd->split_fb_right);
 	return ret;
+}
+
+static void mdss_fb_get_split(struct msm_fb_data_type *mfd)
+{
+	if (mfd->index != 0)
+		return;
+
+	if (!mfd->mdss_fb_split_stored)
+		mdss_fb_parse_dt_split(mfd);
+
+	if (mfd->split_fb_left || mfd->split_fb_right)
+		pr_debug("split framebuffer left=%d right=%d\n",
+			mfd->split_fb_left, mfd->split_fb_right);
 }
 
 static ssize_t mdss_mdp_show_blank_event(struct device *dev,
@@ -573,7 +616,8 @@ static int mdss_fb_lpm_enable(struct msm_fb_data_type *mfd, int mode)
 }
 
 static DEVICE_ATTR(msm_fb_type, S_IRUGO, mdss_fb_get_type, NULL);
-static DEVICE_ATTR(msm_fb_split, S_IRUGO, mdss_fb_get_split, NULL);
+static DEVICE_ATTR(msm_fb_split, S_IRUGO | S_IWUSR, mdss_fb_show_split,
+					mdss_fb_store_split);
 static DEVICE_ATTR(show_blank_event, S_IRUGO, mdss_mdp_show_blank_event, NULL);
 static DEVICE_ATTR(idle_time, S_IRUGO | S_IWUSR | S_IWGRP,
 	mdss_fb_get_idle_time, mdss_fb_set_idle_time);
@@ -659,7 +703,6 @@ static int mdss_fb_probe(struct platform_device *pdev)
 
 	mfd->ext_ad_ctrl = -1;
 	mfd->bl_level = 0;
-	mfd->bl_level_prev_scaled = 0;
 	mfd->bl_scale = 1024;
 	mfd->bl_min_lvl = 0;
 	mfd->fb_imgType = MDP_RGBA_8888;
@@ -758,12 +801,12 @@ static int mdss_fb_remove(struct platform_device *pdev)
 
 	mfd = (struct msm_fb_data_type *)platform_get_drvdata(pdev);
 
+	if (!mfd)
+		return -ENODEV;
+
 	mdss_fb_remove_sysfs(mfd);
 
 	pm_runtime_disable(mfd->fbi->dev);
-
-	if (!mfd)
-		return -ENODEV;
 
 	if (mfd->key != MFD_KEY)
 		return -EINVAL;
@@ -918,6 +961,15 @@ static int mdss_fb_pm_resume(struct device *dev)
 
 	dev_dbg(dev, "display pm resume\n");
 
+	/*
+	 * It is possible that the runtime status of the fb device may
+	 * have been active when the system was suspended. Reset the runtime
+	 * status to suspended state after a complete system resume.
+	 */
+	pm_runtime_disable(dev);
+	pm_runtime_set_suspended(dev);
+	pm_runtime_enable(dev);
+
 	return mdss_fb_resume_sub(mfd);
 }
 #endif
@@ -994,7 +1046,6 @@ void mdss_fb_set_backlight(struct msm_fb_data_type *mfd, u32 bkl_lvl)
 	pdata = dev_get_platdata(&mfd->pdev->dev);
 
 	if ((pdata) && (pdata->set_backlight)) {
-		mfd->bl_level_prev_scaled = mfd->bl_level_scaled;
 		if (!IS_CALIB_MODE_BL(mfd))
 			mdss_fb_scale_bl(mfd, &temp);
 		/*
@@ -1077,7 +1128,7 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 		mutex_lock(&mfd->bl_lock);
 		if (!mfd->bl_updated) {
 			mfd->bl_updated = 1;
-			mdss_fb_set_backlight(mfd, mfd->bl_level_prev_scaled);
+			mdss_fb_set_backlight(mfd, mfd->unset_bl_level);
 		}
 		mutex_unlock(&mfd->bl_lock);
 		break;
@@ -1188,6 +1239,7 @@ void mdss_fb_free_fb_ion_memory(struct msm_fb_data_type *mfd)
 				mfd->mdp.fb_mem_get_iommu_domain(), 0);
 	}
 
+	dma_buf_put(mfd->fbmem_buf);
 	ion_free(mfd->fb_ion_client, mfd->fb_ion_handle);
 	mfd->fb_ion_handle = NULL;
 }
@@ -1231,8 +1283,10 @@ int mdss_fb_alloc_fb_ion_memory(struct msm_fb_data_type *mfd, size_t fb_size)
 	} else {
 		pr_err("No IOMMU Domain");
 		goto fb_mmap_failed;
-
 	}
+
+	mfd->fbmem_buf = ion_share_dma_buf(mfd->fb_ion_client,
+			mfd->fb_ion_handle);
 
 	vaddr  = ion_map_kernel(mfd->fb_ion_client, mfd->fb_ion_handle);
 	if (IS_ERR_OR_NULL(vaddr)) {
@@ -1717,8 +1771,6 @@ static int mdss_fb_register(struct msm_fb_data_type *mfd)
 	mfd->panel_power_on = false;
 	mfd->dcm_state = DCM_UNINIT;
 
-	mdss_fb_parse_dt(mfd);
-
 	if (mdss_fb_alloc_fbmem(mfd))
 		pr_warn("unable to allocate fb memory in fb register\n");
 
@@ -1876,6 +1928,7 @@ static int mdss_fb_open(struct fb_info *info, int user)
 	}
 
 	if (!mfd->ref_cnt) {
+		mdss_fb_get_split(mfd);
 		mfd->disp_thread = kthread_run(__mdss_fb_display_thread, mfd,
 				"mdss_fb%d", mfd->index);
 		if (IS_ERR(mfd->disp_thread)) {
@@ -3125,7 +3178,8 @@ int mdss_register_panel(struct platform_device *pdev,
 		pr_info("adding framebuffer device %s\n", dev_name(&pdev->dev));
 		fb_pdev = of_platform_device_create(node, NULL,
 				&mdss_pdev->dev);
-		fb_pdev->dev.platform_data = pdata;
+		if (fb_pdev)
+			fb_pdev->dev.platform_data = pdata;
 	}
 
 	if (master_panel && mdp_instance->panel_register_done)
@@ -3154,7 +3208,7 @@ int mdss_fb_get_phys_info(dma_addr_t *start, unsigned long *len, int fb_num)
 	struct fb_info *info;
 	struct msm_fb_data_type *mfd;
 
-	if (fb_num > MAX_FBI_LIST)
+	if (fb_num >= MAX_FBI_LIST)
 		return -EINVAL;
 
 	info = fbi_list[fb_num];

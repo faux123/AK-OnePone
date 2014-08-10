@@ -348,6 +348,7 @@ struct hpf_work {
 	struct taiko_priv *taiko;
 	u32 decimator;
 	u8 tx_hpf_cut_of_freq;
+	bool tx_hpf_bypass;
 	struct delayed_work dwork;
 };
 
@@ -450,20 +451,19 @@ struct taiko_priv {
 	int (*machine_codec_event_cb)(struct snd_soc_codec *codec,
 			enum wcd9xxx_codec_event);
 
+	struct regulator *ext_micbias_reg;
+	atomic_t ext_micbias_ref;
+
 	/*
 	 * list used to save/restore registers at start and
 	 * end of impedance measurement
 	 */
 	struct list_head reg_save_restore;
 	struct pm_qos_request pm_qos_req;
-};
 
-/* OPPO 2013-11-12 xuzhaoan Add begin for American Headset Detect */
-#ifdef CONFIG_MACH_OPPO
-static struct regulator *cdc_hpmic_reg = NULL;
-static atomic_t cdc_hpmic_reg_ref;
-#endif
-/* OPPO 2013-11-12 xuzhaoan Add end */
+	/* UHQA (class AB) mode */
+	u8 uhqa_mode;
+};
 
 static const u32 comp_shift[] = {
 	4, /* Compander 0's clock source is on interpolator 7 */
@@ -545,52 +545,96 @@ static unsigned short tx_digital_gain_reg[] = {
 	TAIKO_A_CDC_TX10_VOL_CTL_GAIN,
 };
 
-#ifdef CONFIG_MACH_OPPO
-static void hph_regulator_control(bool enable)
+static int taiko_get_sample_rate(struct snd_soc_codec *codec, int path)
+{
+	return snd_soc_read(codec,
+		(TAIKO_A_CDC_RX1_B5_CTL + 8 * (path - 1)));
+}
+
+static int taiko_compare_bit_format(struct snd_soc_codec *codec,
+			       int bit_format)
+{
+	int i = 0;
+	int ret = 0;
+	struct taiko_priv *taiko_p = snd_soc_codec_get_drvdata(codec);
+
+	for (i = 0; i < NUM_CODEC_DAIS; i++) {
+		if (taiko_p->dai[i].bit_width == bit_format) {
+			ret = 1;
+			break;
+		}
+	}
+	return ret;
+}
+
+static int taiko_update_uhqa_mode(struct snd_soc_codec *codec, int path)
 {
 	int ret = 0;
+	struct taiko_priv *taiko_p = snd_soc_codec_get_drvdata(codec);
 
-	if (!cdc_hpmic_reg)
-		return;
+	/* Enable UHQA path for fs >= 96KHz & bit=24 bit */
+	if (((taiko_get_sample_rate(codec, path) & 0xE0) >= 0xA0) ||
+		(taiko_compare_bit_format(codec, 24))) {
+		taiko_p->uhqa_mode = 1;
+	} else {
+		taiko_p->uhqa_mode = 0;
+	}
+	dev_info(codec->dev, "%s: uhqa_mode=%d", __func__, taiko_p->uhqa_mode);
+	return ret;
+}
+
+#ifdef CONFIG_MACH_OPPO
+static int ext_micbias_regulator_control(struct snd_soc_codec *codec,
+		bool enable)
+{
+	int ret = 0;
+	struct taiko_priv *taiko = snd_soc_codec_get_drvdata(codec);
+
+	if (!taiko->ext_micbias_reg)
+		return 0;
 
 	pr_debug("%s() enable: %d, ref count: %d",
-			__func__, enable, atomic_read(&cdc_hpmic_reg_ref));
+			__func__, enable, atomic_read(&taiko->ext_micbias_ref));
 
 	if (enable) {
-		if (atomic_inc_return(&cdc_hpmic_reg_ref) == 1) {
-			ret = regulator_enable(cdc_hpmic_reg);
+		if (atomic_inc_return(&taiko->ext_micbias_ref) == 1) {
+			ret = regulator_enable(taiko->ext_micbias_reg);
 			if (ret) {
-				pr_err("%s: Failed to enable cdc_hpmic\n",
-						__func__);
+				pr_err("%s: Failed to enable ext micbias %d\n",
+						__func__, ret);
 			}
 		}
 	} else {
-		if (atomic_read(&cdc_hpmic_reg_ref) == 0)
-			return;
+		if (atomic_read(&taiko->ext_micbias_ref) == 0)
+			return 0;
 
-		if (atomic_dec_return(&cdc_hpmic_reg_ref) == 0) {
-			ret = regulator_disable(cdc_hpmic_reg);
+		if (atomic_dec_return(&taiko->ext_micbias_ref) == 0) {
+			ret = regulator_disable(taiko->ext_micbias_reg);
 			if (ret) {
-				pr_err("%s: Failed to disable cdc_hpmic\n",
-						__func__);
+				pr_err("%s: Failed to disable ext micbias %d\n",
+						__func__, ret);
 			}
 		}
 	}
+
+	return ret;
 }
 
-static int taiko_codec_enable_hph_supply(struct snd_soc_dapm_widget *w,
+static int taiko_codec_enable_ext_mb_supply(struct snd_soc_dapm_widget *w,
 				       struct snd_kcontrol *kcontrol,
 				       int event)
 {
+	struct snd_soc_codec *codec = w->codec;
+
 	pr_debug("%s() %s: event: %d\n", __func__, w->name, event);
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
-		hph_regulator_control(true);
-		break;
+		return ext_micbias_regulator_control(codec, true);
+
 	case SND_SOC_DAPM_POST_PMD:
-		hph_regulator_control(false);
-		break;
+		return ext_micbias_regulator_control(codec, false);
+
 	default:
 		break;
 	}
@@ -618,7 +662,7 @@ static int taiko_enable_ext_mb_source(struct snd_soc_codec *codec,
 
 		snd_soc_dapm_sync(&codec->dapm);
 	} else {
-		hph_regulator_control(turn_on);
+		ret = ext_micbias_regulator_control(codec, turn_on);
 	}
 
 	if (ret)
@@ -629,32 +673,6 @@ static int taiko_enable_ext_mb_source(struct snd_soc_codec *codec,
 			__func__, turn_on ? "enable" : "disable");
 
 	return ret;
-}
-
-static int taiko_micbias_supply_init(struct device *dev)
-{
-	atomic_set(&cdc_hpmic_reg_ref, 0);
-
-	if (cdc_hpmic_reg == NULL) {
-		cdc_hpmic_reg = regulator_get(dev->parent, "cdc-hpmic_switch-1");
-		if (IS_ERR(cdc_hpmic_reg)) {
-			pr_err("%s: Cannot get regulator %s.\n",
-					__func__, "cdc-hpmic_switch-1");
-			return PTR_ERR(cdc_hpmic_reg);
-		}
-	}
-
-	return 0;
-}
-
-static int taiko_micbias_supply_close(void)
-{
-	atomic_set(&cdc_hpmic_reg_ref, 0);
-
-	if (cdc_hpmic_reg)
-		regulator_put(cdc_hpmic_reg);
-
-	return 0;
 }
 #endif
 
@@ -1402,6 +1420,52 @@ static int taiko_mad_input_put(struct snd_kcontrol *kcontrol,
 	}
 }
 
+static int taiko_tx_hpf_bypass_get(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	u32	tx_index;
+
+	tx_index = (u32)kcontrol->private_value;
+
+	if (tx_index > NUM_DECIMATORS) {
+		pr_err("%s: Invalid TX decimator %d\n", __func__,
+			   tx_index);
+		return -EINVAL;
+	}
+
+	ucontrol->value.integer.value[0] =
+		tx_hpf_work[tx_index-1].tx_hpf_bypass;
+
+	return 0;
+}
+
+static int taiko_tx_hpf_bypass_put(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol)
+{
+	bool tx_hpf_bypass_cfg;
+	u32	tx_index;
+
+	tx_hpf_bypass_cfg = (bool)ucontrol->value.integer.value[0];
+
+	pr_debug("%s: tx_hpf_bypass = %d\n", __func__,
+			tx_hpf_bypass_cfg);
+
+	tx_index = (u32)kcontrol->private_value;
+
+	if (tx_index > NUM_DECIMATORS) {
+		pr_err("%s: Invalid TX decimator %d\n", __func__,
+			   tx_index);
+		return -EINVAL;
+	}
+	if (tx_hpf_work[tx_index-1].tx_hpf_bypass != tx_hpf_bypass_cfg)
+		tx_hpf_work[tx_index-1].tx_hpf_bypass = tx_hpf_bypass_cfg;
+
+	pr_debug("%s: Set TX%d HPF bypass configuration %d",
+			 __func__, tx_index,
+			 tx_hpf_work[tx_index-1].tx_hpf_bypass);
+
+	return 0;
+}
 
 static const struct snd_kcontrol_new taiko_snd_controls[] = {
 
@@ -1474,16 +1538,36 @@ static const struct snd_kcontrol_new taiko_snd_controls[] = {
 	SOC_ENUM("TX9 HPF cut off", cf_dec9_enum),
 	SOC_ENUM("TX10 HPF cut off", cf_dec10_enum),
 
-	SOC_SINGLE("TX1 HPF Switch", TAIKO_A_CDC_TX1_MUX_CTL, 3, 1, 0),
-	SOC_SINGLE("TX2 HPF Switch", TAIKO_A_CDC_TX2_MUX_CTL, 3, 1, 0),
-	SOC_SINGLE("TX3 HPF Switch", TAIKO_A_CDC_TX3_MUX_CTL, 3, 1, 0),
-	SOC_SINGLE("TX4 HPF Switch", TAIKO_A_CDC_TX4_MUX_CTL, 3, 1, 0),
-	SOC_SINGLE("TX5 HPF Switch", TAIKO_A_CDC_TX5_MUX_CTL, 3, 1, 0),
-	SOC_SINGLE("TX6 HPF Switch", TAIKO_A_CDC_TX6_MUX_CTL, 3, 1, 0),
-	SOC_SINGLE("TX7 HPF Switch", TAIKO_A_CDC_TX7_MUX_CTL, 3, 1, 0),
-	SOC_SINGLE("TX8 HPF Switch", TAIKO_A_CDC_TX8_MUX_CTL, 3, 1, 0),
-	SOC_SINGLE("TX9 HPF Switch", TAIKO_A_CDC_TX9_MUX_CTL, 3, 1, 0),
-	SOC_SINGLE("TX10 HPF Switch", TAIKO_A_CDC_TX10_MUX_CTL, 3, 1, 0),
+	SOC_SINGLE_BOOL_EXT("TX1 HPF Switch", 1,
+				taiko_tx_hpf_bypass_get,
+				taiko_tx_hpf_bypass_put),
+	SOC_SINGLE_BOOL_EXT("TX2 HPF Switch", 2,
+				taiko_tx_hpf_bypass_get,
+				taiko_tx_hpf_bypass_put),
+	SOC_SINGLE_BOOL_EXT("TX3 HPF Switch", 3,
+				taiko_tx_hpf_bypass_get,
+				taiko_tx_hpf_bypass_put),
+	SOC_SINGLE_BOOL_EXT("TX4 HPF Switch", 4,
+				taiko_tx_hpf_bypass_get,
+				taiko_tx_hpf_bypass_put),
+	SOC_SINGLE_BOOL_EXT("TX5 HPF Switch", 5,
+				taiko_tx_hpf_bypass_get,
+				taiko_tx_hpf_bypass_put),
+	SOC_SINGLE_BOOL_EXT("TX6 HPF Switch", 6,
+				taiko_tx_hpf_bypass_get,
+				taiko_tx_hpf_bypass_put),
+	SOC_SINGLE_BOOL_EXT("TX7 HPF Switch", 7,
+				taiko_tx_hpf_bypass_get,
+				taiko_tx_hpf_bypass_put),
+	SOC_SINGLE_BOOL_EXT("TX8 HPF Switch", 8,
+				taiko_tx_hpf_bypass_get,
+				taiko_tx_hpf_bypass_put),
+	SOC_SINGLE_BOOL_EXT("TX9 HPF Switch", 9,
+				taiko_tx_hpf_bypass_get,
+				taiko_tx_hpf_bypass_put),
+	SOC_SINGLE_BOOL_EXT("TX10 HPF Switch", 10,
+				taiko_tx_hpf_bypass_get,
+				taiko_tx_hpf_bypass_put),
 
 	SOC_SINGLE("RX1 HPF Switch", TAIKO_A_CDC_RX1_B5_CTL, 2, 1, 0),
 	SOC_SINGLE("RX2 HPF Switch", TAIKO_A_CDC_RX2_B5_CTL, 2, 1, 0),
@@ -1780,7 +1864,7 @@ static const char * const dec7_mux_text[] = {
 };
 
 static const char * const dec8_mux_text[] = {
-	"ZERO", "DMIC2", "DMIC5", "ADC2", "ADC5",
+	"ZERO", "DMIC2", "DMIC5", "ADC2", "ADC5", "ANC1_FB", "ANC2_FB",
 };
 
 static const char * const dec9_mux_text[] = {
@@ -2752,12 +2836,10 @@ static int taiko_codec_enable_lineout(struct snd_soc_dapm_widget *w,
 		usleep_range(5000, 5100);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
-#ifndef CONFIG_MACH_OPPO
 		wcd9xxx_clsh_fsm(codec, &taiko->clsh_d,
 						 WCD9XXX_CLSH_STATE_LO,
 						 WCD9XXX_CLSH_REQ_DISABLE,
 						 WCD9XXX_CLSH_EVENT_POST_PA);
-#endif
 		snd_soc_update_bits(codec, lineout_gain_reg, 0x40, 0x00);
 		pr_debug("%s: sleeping 5 ms after %s PA turn off\n",
 				__func__, w->name);
@@ -3228,22 +3310,29 @@ static int taiko_codec_enable_dec(struct snd_soc_dapm_widget *w,
 			1 << w->shift);
 		snd_soc_update_bits(codec, dec_reset_reg, 1 << w->shift, 0x0);
 
-		dec_hpf_cut_of_freq = snd_soc_read(codec, tx_mux_ctl_reg);
+		pr_debug("%s: decimator = %u, bypass = %d\n", __func__,
+			decimator, tx_hpf_work[decimator - 1].tx_hpf_bypass);
+		if (tx_hpf_work[decimator - 1].tx_hpf_bypass != true) {
+			dec_hpf_cut_of_freq = snd_soc_read(codec,
+							tx_mux_ctl_reg);
 
-		dec_hpf_cut_of_freq = (dec_hpf_cut_of_freq & 0x30) >> 4;
+			dec_hpf_cut_of_freq = (dec_hpf_cut_of_freq & 0x30) >> 4;
 
-		tx_hpf_work[decimator - 1].tx_hpf_cut_of_freq =
-			dec_hpf_cut_of_freq;
+			tx_hpf_work[decimator - 1].tx_hpf_cut_of_freq =
+				dec_hpf_cut_of_freq;
 
-		if ((dec_hpf_cut_of_freq != CF_MIN_3DB_150HZ)) {
+			if ((dec_hpf_cut_of_freq != CF_MIN_3DB_150HZ)) {
 
-			/* set cut of freq to CF_MIN_3DB_150HZ (0x1); */
-			snd_soc_update_bits(codec, tx_mux_ctl_reg, 0x30,
-					    CF_MIN_3DB_150HZ << 4);
-		}
+				/* set cut of freq to CF_MIN_3DB_150HZ (0x1); */
+				snd_soc_update_bits(codec, tx_mux_ctl_reg, 0x30,
+							CF_MIN_3DB_150HZ << 4);
+			}
 
-		/* enable HPF */
-		snd_soc_update_bits(codec, tx_mux_ctl_reg , 0x08, 0x00);
+			/* enable HPF */
+			snd_soc_update_bits(codec, tx_mux_ctl_reg , 0x08, 0x00);
+		} else
+			/* bypass HPF */
+			snd_soc_update_bits(codec, tx_mux_ctl_reg , 0x08, 0x08);
 
 		break;
 
@@ -3252,8 +3341,9 @@ static int taiko_codec_enable_dec(struct snd_soc_dapm_widget *w,
 		/* Disable TX digital mute */
 		snd_soc_update_bits(codec, tx_vol_ctl_reg, 0x01, 0x00);
 
-		if (tx_hpf_work[decimator - 1].tx_hpf_cut_of_freq !=
-				CF_MIN_3DB_150HZ) {
+		if ((tx_hpf_work[decimator - 1].tx_hpf_cut_of_freq !=
+				CF_MIN_3DB_150HZ) &&
+			(tx_hpf_work[decimator - 1].tx_hpf_bypass != true)) {
 
 			schedule_delayed_work(&tx_hpf_work[decimator - 1].dwork,
 					msecs_to_jiffies(300));
@@ -3361,6 +3451,9 @@ static int taiko_codec_enable_interpolator(struct snd_soc_dapm_widget *w,
 				  snd_soc_read(codec,
 				  rx_digital_gain_reg[w->shift])
 				  );
+		/* Check for Rx1 and Rx2 paths for uhqa mode update */
+		if (w->shift == 0 || w->shift == 1)
+			taiko_update_uhqa_mode(codec, (1 << w->shift));
 		break;
 	}
 	return 0;
@@ -3461,7 +3554,7 @@ static int taiko_hphl_dac_event(struct snd_soc_dapm_widget *w,
 	case SND_SOC_DAPM_PRE_PMU:
 		snd_soc_update_bits(codec, TAIKO_A_CDC_CLK_RDAC_CLK_EN_CTL,
 							0x02, 0x02);
-		if (!high_perf_mode) {
+		if (!high_perf_mode && !taiko_p->uhqa_mode) {
 			wcd9xxx_clsh_fsm(codec, &taiko_p->clsh_d,
 						 WCD9XXX_CLSH_STATE_HPHL,
 						 WCD9XXX_CLSH_REQ_ENABLE,
@@ -3510,7 +3603,7 @@ static int taiko_hphr_dac_event(struct snd_soc_dapm_widget *w,
 							0x04, 0x04);
 		snd_soc_update_bits(codec, w->reg, 0x40, 0x40);
 
-		if (!high_perf_mode) {
+		if (!high_perf_mode && !taiko_p->uhqa_mode) {
 			wcd9xxx_clsh_fsm(codec, &taiko_p->clsh_d,
 						 WCD9XXX_CLSH_STATE_HPHR,
 						 WCD9XXX_CLSH_REQ_ENABLE,
@@ -3680,7 +3773,7 @@ static int taiko_hph_pa_event(struct snd_soc_dapm_widget *w,
 		pr_debug("%s: sleep %d us after %s PA enable\n", __func__,
 				pa_settle_time, w->name);
 
-		if (!high_perf_mode) {
+		if (!high_perf_mode && !taiko->uhqa_mode) {
 			wcd9xxx_clsh_fsm(codec, &taiko->clsh_d,
 						 req_clsh_state,
 						 WCD9XXX_CLSH_REQ_ENABLE,
@@ -3696,7 +3789,7 @@ static int taiko_hph_pa_event(struct snd_soc_dapm_widget *w,
 		/* Let MBHC module know PA turned off */
 		wcd9xxx_resmgr_notifier_call(&taiko->resmgr, e_post_off);
 
-		if (!high_perf_mode) {
+		if (!high_perf_mode && !taiko->uhqa_mode) {
 			wcd9xxx_clsh_fsm(codec, &taiko->clsh_d,
 						 req_clsh_state,
 						 WCD9XXX_CLSH_REQ_DISABLE,
@@ -3977,6 +4070,12 @@ static const struct snd_soc_dapm_route audio_map[] = {
 	{"ANC2 MUX", "ADC2", "ADC2"},
 	{"ANC2 MUX", "ADC3", "ADC3"},
 	{"ANC2 MUX", "ADC4", "ADC4"},
+	{"ANC2 MUX", "DMIC1", "DMIC1"},
+	{"ANC2 MUX", "DMIC2", "DMIC2"},
+	{"ANC2 MUX", "DMIC3", "DMIC3"},
+	{"ANC2 MUX", "DMIC4", "DMIC4"},
+	{"ANC2 MUX", "DMIC5", "DMIC5"},
+	{"ANC2 MUX", "DMIC6", "DMIC6"},
 
 	{"ANC HPHR", NULL, "CDC_CONN"},
 
@@ -4271,21 +4370,29 @@ static const struct snd_soc_dapm_route audio_map[] = {
 	{"DEC7 MUX", "DMIC6", "DMIC6"},
 	{"DEC7 MUX", "ADC1", "ADC1"},
 	{"DEC7 MUX", "ADC6", "ADC6"},
+	{"DEC7 MUX", "ANC1_FB", "ANC1 MUX"},
+	{"DEC7 MUX", "ANC2_FB", "ANC2 MUX"},
 	{"DEC7 MUX", NULL, "CDC_CONN"},
 	{"DEC8 MUX", "DMIC2", "DMIC2"},
 	{"DEC8 MUX", "DMIC5", "DMIC5"},
 	{"DEC8 MUX", "ADC2", "ADC2"},
 	{"DEC8 MUX", "ADC5", "ADC5"},
+	{"DEC8 MUX", "ANC1_FB", "ANC1 MUX"},
+	{"DEC8 MUX", "ANC2_FB", "ANC2 MUX"},
 	{"DEC8 MUX", NULL, "CDC_CONN"},
 	{"DEC9 MUX", "DMIC4", "DMIC4"},
 	{"DEC9 MUX", "DMIC5", "DMIC5"},
 	{"DEC9 MUX", "ADC2", "ADC2"},
 	{"DEC9 MUX", "ADC3", "ADC3"},
+	{"DEC9 MUX", "ANC1_FB", "ANC1 MUX"},
+	{"DEC9 MUX", "ANC2_FB", "ANC2 MUX"},
 	{"DEC9 MUX", NULL, "CDC_CONN"},
 	{"DEC10 MUX", "DMIC3", "DMIC3"},
 	{"DEC10 MUX", "DMIC6", "DMIC6"},
 	{"DEC10 MUX", "ADC1", "ADC1"},
 	{"DEC10 MUX", "ADC4", "ADC4"},
+	{"DEC10 MUX", "ANC1_FB", "ANC1 MUX"},
+	{"DEC10 MUX", "ANC2_FB", "ANC2 MUX"},
 	{"DEC10 MUX", NULL, "CDC_CONN"},
 
 	/* ADC Connections */
@@ -5917,7 +6024,7 @@ static const struct snd_soc_dapm_widget taiko_dapm_widgets[] = {
 
 #ifdef CONFIG_MACH_OPPO
 	SND_SOC_DAPM_SUPPLY("MICBIAS_REGULATOR", SND_SOC_NOPM, 0, 0,
-		taiko_codec_enable_hph_supply, SND_SOC_DAPM_PRE_PMU |
+		taiko_codec_enable_ext_mb_supply, SND_SOC_DAPM_PRE_PMU |
 		SND_SOC_DAPM_POST_PMD),
 #endif
 
@@ -6563,7 +6670,8 @@ static int taiko_handle_pdata(struct taiko_priv *taiko)
 		0xE, dmic_b2_ctl_value);
 	snd_soc_update_bits(codec, TAIKO_A_CDC_ANC1_B2_CTL,
 		0x1, anc_ctl_value);
-
+	snd_soc_update_bits(codec, TAIKO_A_CDC_ANC2_B2_CTL,
+		0x01, anc_ctl_value);
 done:
 	return rc;
 }
@@ -6820,11 +6928,6 @@ static const struct wcd9xxx_reg_mask_val taiko_codec_reg_init_val[] = {
 
 	/* set MAD input MIC to DMIC1 */
 	{TAIKO_A_CDC_CONN_MAD, 0x0F, 0x08},
-
-#ifdef CONFIG_MACH_OPPO
-/* liuyan@Onlinerd.driver, 2014/01/15  Add for micbias pull down */
-	{TAIKO_A_MICB_1_CTL,0x01,0x01},
-#endif /*CONFIG_MACH_OPPO*/
 
 	/* set DMIC CLK drive strength to 4mA */
 	{TAIKO_A_HDRIVE_OVERRIDE, 0x07, 0x01},
@@ -7086,7 +7189,9 @@ static int taiko_setup_zdet(struct wcd9xxx_mbhc *mbhc,
 		/* Clean up starts */
 		/* Turn off PA ramp generator */
 		snd_soc_write(codec, WCD9XXX_A_CDC_PA_RAMP_B1_CTL, 0x0);
-		if (!mbhc->hph_pa_dac_state)
+		if (!mbhc->hph_pa_dac_state &&
+		    (!(test_bit(MBHC_EVENT_PA_HPHL, &mbhc->event_state) ||
+		       test_bit(MBHC_EVENT_PA_HPHR, &mbhc->event_state))))
 			wcd9xxx_enable_static_pa(mbhc, false);
 		wcd9xxx_restore_registers(codec, &taiko->reg_save_restore);
 		break;
@@ -7099,21 +7204,26 @@ static int taiko_setup_zdet(struct wcd9xxx_mbhc *mbhc,
 static void taiko_compute_impedance(s16 *l, s16 *r, uint32_t *zl, uint32_t *zr)
 {
 
-	int64_t rl, rr = 0; /* milliohm */
+	int64_t rl = 0, rr = 0; /* milliohm */
+	int zld, zrd;
 	const int alphal = 364; /* 0.005555 * 65536 = 364.05 */
 	const int alphar = 364; /* 0.005555 * 65536 = 364.05 */
 	const int beta = 3855; /* 0.011765 * 5 * 65536 = 3855.15 */
 	const int rref = 11333; /* not scaled up */
 	const int shift = 16;
 
-	rl = (int)(l[0] - l[1]) * 1000 / (l[0] - l[2]);
+	zld = l[0] - l[2];
+	if (zld)
+		rl = (int)(l[0] - l[1]) * 1000 / zld;
 	rl = rl * rref * alphal;
 	rl = rl >> shift;
 	rl = rl * beta;
 	rl = rl >> shift;
 	*zl = rl;
 
-	rr = (int)(r[0] - r[1]) * 1000 / (r[0] - r[2]);
+	zrd = r[0] - r[2];
+	if (zrd)
+		rr = (int)(r[0] - r[1]) * 1000 / zrd;
 	rr = rr * rref  * alphar;
 	rr = rr >> shift;
 	rr = rr * beta;
@@ -7373,6 +7483,7 @@ static int taiko_codec_probe(struct snd_soc_codec *codec)
 	for (i = 0 ; i < NUM_DECIMATORS; i++) {
 		tx_hpf_work[i].taiko = taiko;
 		tx_hpf_work[i].decimator = i + 1;
+		tx_hpf_work[i].tx_hpf_bypass = false;
 		INIT_DELAYED_WORK(&tx_hpf_work[i].dwork,
 			tx_hpf_corner_freq_callback);
 	}
@@ -7411,9 +7522,6 @@ static int taiko_codec_probe(struct snd_soc_codec *codec)
 		pr_err("%s: mbhc init failed %d\n", __func__, ret);
 		goto err_init;
 	}
-#ifdef CONFIG_MACH_OPPO
-	taiko_micbias_supply_init(codec->dev);
-#endif
 	taiko->codec = codec;
 	for (i = 0; i < COMPANDER_MAX; i++) {
 		taiko->comp_enabled[i] = 0;
@@ -7437,6 +7545,10 @@ static int taiko_codec_probe(struct snd_soc_codec *codec)
 		pr_err("%s: bad pdata\n", __func__);
 		goto err_pdata;
 	}
+
+	atomic_set(&taiko->ext_micbias_ref, 0);
+	taiko->ext_micbias_reg = taiko_codec_find_regulator(codec,
+							   WCD9XXX_VDD_MICBIAS_NAME);
 
 	taiko->spkdrv_reg = taiko_codec_find_regulator(codec,
 						       WCD9XXX_VDD_SPKDRV_NAME);
@@ -7553,15 +7665,12 @@ static int taiko_codec_remove(struct snd_soc_codec *codec)
 
 	taiko_cleanup_irqs(taiko);
 
-#ifdef CONFIG_MACH_OPPO
-	taiko_micbias_supply_close();
-#endif
-
 	/* cleanup MBHC */
 	wcd9xxx_mbhc_deinit(&taiko->mbhc);
 	/* cleanup resmgr */
 	wcd9xxx_resmgr_deinit(&taiko->resmgr);
 
+	taiko->ext_micbias_reg = NULL;
 	taiko->spkdrv_reg = NULL;
 
 	kfree(taiko);

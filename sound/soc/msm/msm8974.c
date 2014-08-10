@@ -136,12 +136,10 @@ static struct wcd9xxx_mbhc_config mbhc_cfg = {
 #endif
 	.insert_detect = true,
 	.swap_gnd_mic = NULL,
-#ifdef CONFIG_MACH_OPPO
-	.set_gnd_mic_gpio = NULL,
-#endif
 	.cs_enable_flags = (1 << MBHC_CS_ENABLE_POLLING |
 			    1 << MBHC_CS_ENABLE_INSERTION |
-			    1 << MBHC_CS_ENABLE_REMOVAL),
+			    1 << MBHC_CS_ENABLE_REMOVAL |
+			    1 << MBHC_CS_ENABLE_DET_ANC),
 	.do_recalibration = true,
 	.use_vddio_meas = true,
 	.enable_anc_mic_detect = false,
@@ -1571,14 +1569,6 @@ static const struct snd_kcontrol_new msm_snd_controls[] = {
 			hdmi_rx_sample_rate_get, hdmi_rx_sample_rate_put),
 };
 
-#ifdef CONFIG_MACH_OPPO
-static void msm8974_set_gnd_mic_gpio(struct snd_soc_codec *codec, int value)
-{
-	struct snd_soc_card *card = codec->card;
-	struct msm8974_asoc_mach_data *pdata = snd_soc_card_get_drvdata(card);
-	gpio_set_value_cansleep(pdata->us_euro_gpio, value);
-}
-#else
 static bool msm8974_swap_gnd_mic(struct snd_soc_codec *codec)
 {
 	struct snd_soc_card *card = codec->card;
@@ -1588,7 +1578,6 @@ static bool msm8974_swap_gnd_mic(struct snd_soc_codec *codec)
 	gpio_set_value_cansleep(pdata->us_euro_gpio, !value);
 	return true;
 }
-#endif
 
 static int msm_afe_set_config(struct snd_soc_codec *codec)
 {
@@ -2380,10 +2369,10 @@ static struct snd_soc_dai_link msm8974_common_dai_links[] = {
 		.be_id = MSM_FRONTEND_DAI_MULTIMEDIA7,
 	},
 	{
-		.name = "MSM8974 Compr8",
-		.stream_name = "COMPR8",
+		.name = "MSM8974 Compress8",
+		.stream_name = "Compress8",
 		.cpu_dai_name	= "MultiMedia8",
-		.platform_name  = "msm-compr-dsp",
+		.platform_name  = "msm-compress-dsp",
 		.dynamic = 1,
 		.async_ops = ASYNC_DPCM_SND_SOC_PREPARE
 			| ASYNC_DPCM_SND_SOC_HW_PARAMS,
@@ -2640,6 +2629,21 @@ static struct snd_soc_dai_link msm8974_common_dai_links[] = {
 		/* this dainlink has playback support */
 		.ignore_pmdown_time = 1,
 		.be_id = MSM_FRONTEND_DAI_MULTIMEDIA9,
+	},
+	{
+		.name = "VoWLAN",
+		.stream_name = "VoWLAN",
+		.cpu_dai_name   = "VoWLAN",
+		.platform_name  = "msm-pcm-voice",
+		.dynamic = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			    SND_SOC_DPCM_TRIGGER_POST},
+		.no_host_mode = SND_SOC_DAI_LINK_NO_HOST,
+		.ignore_suspend = 1,
+		.ignore_pmdown_time = 1,
+		.codec_dai_name = "snd-soc-dummy-dai",
+		.codec_name = "snd-soc-dummy",
+		.be_id = MSM_FRONTEND_DAI_VOWLAN,
 	},
 	/* Backend BT/FM DAI Links */
 	{
@@ -3249,11 +3253,7 @@ static __devinit int msm8974_asoc_machine_probe(struct platform_device *pdev)
 	} else {
 		dev_dbg(&pdev->dev, "%s detected %d",
 			"qcom,us-euro-gpios", pdata->us_euro_gpio);
-#ifdef CONFIG_MACH_OPPO
-		mbhc_cfg.set_gnd_mic_gpio = msm8974_set_gnd_mic_gpio;
-#else
 		mbhc_cfg.swap_gnd_mic = msm8974_swap_gnd_mic;
-#endif
 	}
 
 	ret = msm8974_prepare_us_euro(card);

@@ -13,6 +13,7 @@
 &soc {
 	sound {
 		qcom,audio-routing =
+			"AIF4 VI", "MCLK",
 			"RX_BIAS", "MCLK",
 			"LDO_H", "MCLK",
 			"AIF4 MAD", "MCLK",
@@ -52,7 +53,6 @@
 		cdc-vdd-spkdrv-supply = <&pm8941_boost>;
 		qcom,cdc-vdd-spkdrv-voltage = <4500000 4500000>;
 		qcom,cdc-vdd-spkdrv-current = <1250000>;
-		qcom,cdc-on-demand-supplies = "cdc-vdd-spkdrv";
-		qcom,cdc-micbias2-ext-cap;
+		qcom,cdc-on-demand-supplies = "cdc-vdd-spkdrv", "cdc-vdd-mic-bias";
 	};
 };

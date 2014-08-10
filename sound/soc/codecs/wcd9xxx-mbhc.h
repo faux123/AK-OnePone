@@ -109,6 +109,7 @@ enum wcd9xx_mbhc_cs_enable_bits {
 	MBHC_CS_ENABLE_POLLING,
 	MBHC_CS_ENABLE_INSERTION,
 	MBHC_CS_ENABLE_REMOVAL,
+	MBHC_CS_ENABLE_DET_ANC,
 };
 
 enum wcd9xxx_mbhc_state {
@@ -234,9 +235,6 @@ struct wcd9xxx_mbhc_config {
 	unsigned int mclk_rate;
 	unsigned int gpio;
 	unsigned int gpio_irq;
-#ifdef CONFIG_MACH_OPPO
-	void (*set_gnd_mic_gpio) (struct snd_soc_codec *, int);
-#endif
 	int gpio_level_insert;
 	bool insert_detect; /* codec has own MBHC_INSERT_DETECT */
 	bool detect_extn_cable;
@@ -368,6 +366,9 @@ struct wcd9xxx_mbhc {
 #ifdef CONFIG_MACH_OPPO
 	bool is_hs_inserted;
 #endif
+
+	/* Indicates status of current source switch */
+	bool is_cs_enabled;
 
 #ifdef CONFIG_DEBUG_FS
 	struct dentry *debugfs_poke;

@@ -11,8 +11,8 @@ clear
 # Resources
 THREAD="-j$(grep -c ^processor /proc/cpuinfo)"
 KERNEL="zImage"
+DTB="zImage-dtb"
 DTBIMAGE="boot.img-dtb"
-BOOTIMAGE="boot.img-zImage"
 DEFCONFIG="ak_bacon_defconfig"
 
 # Kernel Details
@@ -30,37 +30,24 @@ export KBUILD_BUILD_HOST=kernel
 
 # Paths
 KERNEL_DIR=`pwd`
-REPACK_DIR="${HOME}/android/AK-OnePone-Ramdisk"
-SPLITIMG_DIR="${HOME}/android/AK-OnePone-Ramdisk/split_img"
-MODULES_DIR="${HOME}/android/AK-OnePone-Ramdisk/cwm/system/lib/modules"
-ZIP_DIR="${HOME}/android/AK-OnePone-Ramdisk/zip"
+REPACK_DIR="${HOME}/android/AK-OnePone-AnyKernel"
+PATCH_DIR="${HOME}/android/AK-OnePone-AnyKernel/patch"
+MODULES_DIR="${HOME}/android/AK-OnePone-AnyKernel/patch/modules"
 ZIP_MOVE="${HOME}/android/AK-releases"
 ZIMAGE_DIR="${HOME}/android/AK-OnePone/arch/arm/boot"
-CWM_DIR="${HOME}/android/AK-OnePone-Ramdisk/cwm"
-
-# Ramdisk Details
-RAMDISK_DIR="${HOME}/android/AK-OnePone-Ramdisk/ramdisk"
-PS=2048
-BASE=0x00000000
-RAMDISK_OFFSET=0x02000000
-TAGS_OFFSET=0x01e00000
-CMDLINE="console=ttyHSL0,115200,n8 androidboot.hardware=bacon user_debug=31 msm_rtb.filter=0x3F ehci-hcd.park=3"
 
 # Functions
 function clean_all {
 		rm -rf $MODULES_DIR/*
-		rm -rf $ZIP_DIR/*
-		rm -rf $CWM_DIR/boot.img*
-		rm -rf $REPACK_DIR/*.gz
-		rm -rf $REPACK_DIR/*.img
-		rm -rf $ZIMAGE_DIR/zImage*
+		rm -rf $REPACK_DIR/$KERNEL
+		rm -rf $PATCH_DIR/$DTBIMAGE
 		make clean && make mrproper
 }
 
 function make_kernel {
 		make $DEFCONFIG
 		make $THREAD
-		cp -vr $ZIMAGE_DIR/$KERNEL $SPLITIMG_DIR/$BOOTIMAGE
+		cp -vr $ZIMAGE_DIR/$KERNEL $REPACK_DIR
 }
 
 function make_modules {
@@ -69,22 +56,13 @@ function make_modules {
 }
 
 function make_dtb {
-		$REPACK_DIR/dtbToolCM -2 -o $SPLITIMG_DIR/$DTBIMAGE -s 2048 -p scripts/dtc/ arch/arm/boot/
-}
-
-function make_boot {
-		cd $REPACK_DIR
-		./repackimg.sh
-		mv image-new.img cwm/boot.img
-		rm -rf ramdisk-new.cpio.gz
-		cd $KERNEL_DIR
+		$REPACK_DIR/tools/dtbToolCM -2 -o $PATCH_DIR/$DTBIMAGE -s 2048 -p scripts/dtc/ arch/arm/boot/
 }
 
 function make_zip {
-		cd $CWM_DIR
-		zip -r `echo $AK_VER`.zip *
-		mv  `echo $AK_VER`.zip $ZIP_DIR
-		cp -vr $ZIP_DIR/`echo $AK_VER`.zip $ZIP_MOVE
+		cd $REPACK_DIR
+		zip -r9 `echo $AK_VER`.zip *
+		mv  `echo $AK_VER`.zip $ZIP_MOVE
 		cd $KERNEL_DIR
 }
 
@@ -142,7 +120,6 @@ case "$dchoice" in
 		make_kernel
 		make_dtb
 		make_modules
-		make_boot
 		make_zip
 		break
 		;;

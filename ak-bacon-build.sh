@@ -61,7 +61,7 @@ function make_dtb {
 
 function make_zip {
 		cd $REPACK_DIR
-		zip -r9 `echo $AK_VER`.zip *
+		zip -r9 `echo $AK_VER`.zip * -x "README"
 		mv  `echo $AK_VER`.zip $ZIP_MOVE
 		cd $KERNEL_DIR
 }

@@ -9,6 +9,8 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  */
+#define DEBUG
+
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/firmware.h>
@@ -102,7 +104,7 @@
  */
 #ifdef CONFIG_MACH_OPPO
 #define WCD9XXX_CS_MEAS_INVALD_RANGE_LOW_MV 80
-#define WCD9XXX_CS_MEAS_INVALD_RANGE_HIGH_MV 145
+#define WCD9XXX_CS_MEAS_INVALD_RANGE_HIGH_MV 100
 #else
 #define WCD9XXX_CS_MEAS_INVALD_RANGE_LOW_MV 160
 #define WCD9XXX_CS_MEAS_INVALD_RANGE_HIGH_MV 265
@@ -127,7 +129,7 @@
 /* RX_HPH_CNP_WG_TIME increases by 0.24ms */
 #define WCD9XXX_WG_TIME_FACTOR_US	240
 
-#define WCD9XXX_V_CS_HS_MAX 200
+#define WCD9XXX_V_CS_HS_MAX 180
 #define WCD9XXX_V_CS_NO_MIC 5
 #define WCD9XXX_MB_MEAS_DELTA_MAX_MV 80
 #ifdef CONFIG_MACH_OPPO

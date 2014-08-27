@@ -334,6 +334,7 @@ static ssize_t mdss_fb_store_split(struct device *dev,
 extern int mdss_dsi_panel_set_cabc(struct mdss_panel_data *panel_data, int level);
 extern int mdss_dsi_panel_set_gamma_index(struct mdss_panel_data *panel_data, int index);
 extern int mdss_dsi_panel_set_sre(struct mdss_panel_data *panel_data, bool enable);
+extern int mdss_dsi_panel_set_color_enhance(struct mdss_panel_data *panel_data, bool enable);
 
 static ssize_t mdss_get_cabc(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -381,6 +382,29 @@ static ssize_t mdss_set_sre(struct device *dev,
 	return count;
 }
 
+static ssize_t mdss_get_color_enhance(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+	struct mdss_panel_data *pdata = dev_get_platdata(&mfd->pdev->dev);
+	return sprintf(buf, "%d\n", pdata->panel_info.color_enhance_enabled);
+}
+
+static ssize_t mdss_set_color_enhance(struct device *dev,
+							   struct device_attribute *attr,
+							   const char *buf, size_t count)
+{
+	int value = 0;
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+	struct mdss_panel_data *pdata = dev_get_platdata(&mfd->pdev->dev);
+
+	sscanf(buf, "%du", &value);
+	mdss_dsi_panel_set_color_enhance(pdata, value > 0);
+	return count;
+}
+
 static ssize_t mdss_get_gamma_index(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -407,6 +431,7 @@ static ssize_t mdss_set_gamma_index(struct device *dev,
 static DEVICE_ATTR(cabc, S_IRUGO | S_IWUSR | S_IWGRP, mdss_get_cabc, mdss_set_cabc);
 static DEVICE_ATTR(gamma, S_IRUGO | S_IWUSR | S_IWGRP, mdss_get_gamma_index, mdss_set_gamma_index);
 static DEVICE_ATTR(sre, S_IRUGO | S_IWUSR | S_IWGRP, mdss_get_sre, mdss_set_sre);
+static DEVICE_ATTR(color_enhance, S_IRUGO | S_IWUSR | S_IWGRP, mdss_get_color_enhance, mdss_set_color_enhance);
 
 extern int mdss_dsi_panel_get_panel_calibration(
 	struct mdss_panel_data *pdata, char *buf);
@@ -660,6 +685,7 @@ static struct attribute *mdss_fb_attrs[] = {
 	&dev_attr_gamma.attr,
     &dev_attr_panel_calibration.attr,
 	&dev_attr_sre.attr,
+	&dev_attr_color_enhance.attr,
 #endif
 	&dev_attr_msm_fb_panel_info.attr,
 	NULL,
@@ -986,6 +1012,15 @@ static int mdss_fb_pm_resume(struct device *dev)
 		return -ENODEV;
 
 	dev_dbg(dev, "display pm resume\n");
+
+	/*
+	 * It is possible that the runtime status of the fb device may
+	 * have been active when the system was suspended. Reset the runtime
+	 * status to suspended state after a complete system resume.
+	 */
+	pm_runtime_disable(dev);
+	pm_runtime_set_suspended(dev);
+	pm_runtime_enable(dev);
 
 	return mdss_fb_resume_sub(mfd);
 }
@@ -2071,6 +2106,9 @@ static int mdss_fb_release_all(struct fb_info *info, bool release_all)
 	if (unknown_pid) {
 		pinfo = mdss_fb_release_file_entry(info, NULL, false);
 		if (pinfo) {
+			pr_debug("found known pid=%d reference for unknown caller pid=%d\n",
+						pinfo->pid, pid);
+			pid = pinfo->pid;
 			mfd->ref_cnt--;
 			pinfo->ref_cnt--;
 			pm_runtime_put(info->dev);
@@ -2086,14 +2124,14 @@ static int mdss_fb_release_all(struct fb_info *info, bool release_all)
 	}
 
 	if (release_needed) {
-		pr_debug("known process %s pid=%d mfd->ref=%d\n",
-			task->comm, pid, mfd->ref_cnt);
+		pr_debug("current process=%s pid=%d known pid=%d mfd->ref=%d\n",
+			task->comm, current->tgid, pid, mfd->ref_cnt);
 
 		if (mfd->mdp.release_fnc) {
-			ret = mfd->mdp.release_fnc(mfd, false);
+			ret = mfd->mdp.release_fnc(mfd, false, pid);
 			if (ret)
-				pr_err("error releasing fb%d pid=%d\n",
-					mfd->index, pid);
+				pr_err("error releasing fb%d for current pid=%d known pid=%d\n",
+					mfd->index, current->tgid, pid);
 		}
 	} else if (release_all && mfd->ref_cnt) {
 		pr_err("reference count mismatch with proc list entries\n");
@@ -2106,10 +2144,10 @@ static int mdss_fb_release_all(struct fb_info *info, bool release_all)
 		}
 
 		if (mfd->mdp.release_fnc) {
-			ret = mfd->mdp.release_fnc(mfd, true);
+			ret = mfd->mdp.release_fnc(mfd, true, pid);
 			if (ret)
-				pr_err("error fb%d release process %s pid=%d\n",
-					mfd->index, task->comm, pid);
+				pr_err("error fb%d release current process=%s pid=%d known pid=%d\n",
+				    mfd->index, task->comm, current->tgid, pid);
 		}
 
 		if (mfd->fb_ion_handle)
@@ -2118,8 +2156,8 @@ static int mdss_fb_release_all(struct fb_info *info, bool release_all)
 		ret = mdss_fb_blank_sub(FB_BLANK_POWERDOWN, info,
 			mfd->op_enable);
 		if (ret) {
-			pr_err("can't turn off fb%d! rc=%d process %s pid=%d\n",
-				mfd->index, ret, task->comm, pid);
+			pr_err("can't turn off fb%d! rc=%d current process=%s pid=%d known pid=%d\n",
+			      mfd->index, ret, task->comm, current->tgid, pid);
 			return ret;
 		}
 		atomic_set(&mfd->ioctl_ref_cnt, 0);

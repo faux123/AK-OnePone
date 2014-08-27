@@ -43,6 +43,9 @@ static struct dsi_panel_cmds gamma2;
 static struct dsi_panel_cmds gamma3;
 static struct dsi_panel_cmds gamma4;
 
+static struct dsi_panel_cmds color_enhance_on_sequence;
+static struct dsi_panel_cmds color_enhance_off_sequence;
+
 static void mdss_dsi_panel_cmds_send(struct mdss_dsi_ctrl_pdata *ctrl,
 			struct dsi_panel_cmds *pcmds);
 
@@ -206,6 +209,61 @@ int mdss_dsi_panel_set_sre(struct mdss_panel_data *pdata, bool enable)
 	pinfo->sre_active = false;
 	mutex_unlock(&config_mutex);
 
+	return ret;
+}
+
+static int mdss_dsi_update_color_enhance(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
+{
+	struct mdss_panel_info *pinfo = NULL;
+
+	if (ctrl_pdata == NULL) {
+		pr_err("%s: Invalid input data\n", __func__);
+		return -EINVAL;
+	}
+
+	pinfo = &(ctrl_pdata->panel_data.panel_info);
+
+	if (!pinfo->color_enhance_available)
+		return -EINVAL;
+
+	pr_info("%s: enabled = %d", __func__, pinfo->color_enhance_enabled);
+
+	mdss_dsi_panel_cmds_send(ctrl_pdata, pinfo->color_enhance_enabled ?
+			&color_enhance_on_sequence : &color_enhance_off_sequence);
+
+	return 0;
+}
+
+int mdss_dsi_panel_set_color_enhance(struct mdss_panel_data *pdata, bool enabled)
+{
+	int ret = 0;
+	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
+	struct mdss_panel_info *pinfo = NULL;
+
+	if (pdata == NULL) {
+		pr_err("%s: Invalid input data\n", __func__);
+		return -EINVAL;
+	}
+
+	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata, panel_data);
+	pinfo = &(ctrl_pdata->panel_data.panel_info);
+
+	if (!pinfo->color_enhance_available)
+		return -EINVAL;
+
+    mutex_lock(&config_mutex);
+
+	pinfo->color_enhance_enabled = enabled;
+
+	if (!pinfo->panel_power_on) {
+		pr_info("%s: lcd is off, queued color enhance change\n", __func__);
+		goto out;
+	}
+
+	ret = mdss_dsi_update_color_enhance(ctrl_pdata);
+
+out:
+    mutex_unlock(&config_mutex);
 	return ret;
 }
 
@@ -839,6 +897,7 @@ static int mdss_dsi_set_col_page_addr(struct mdss_panel_data *pdata)
 	struct mdss_rect *p_roi;
 	struct mdss_rect *c_roi;
 	struct mdss_dsi_ctrl_pdata *ctrl = NULL;
+	struct mdss_dsi_ctrl_pdata *other = NULL;
 	struct dcs_cmd_req cmdreq;
 	int left_or_both = 0;
 
@@ -852,19 +911,32 @@ static int mdss_dsi_set_col_page_addr(struct mdss_panel_data *pdata)
 
 	pinfo = &pdata->panel_info;
 	p_roi = &pinfo->roi;
-	c_roi = &ctrl->roi;
 
 	/*
-	 * if broadcase mode enable or roi had changed
-	 * then do col_page update
+	 * to avoid keep sending same col_page info to panel,
+	 * if roi_merge enabled, the roi of left ctrl is used
+	 * to compare against new merged roi and saved new
+	 * merged roi to it after comparing.
+	 * if roi_merge disabled, then the calling ctrl's roi
+	 * and pinfo's roi are used to compare.
 	 */
+	if (pinfo->partial_update_roi_merge) {
+		left_or_both = mdss_dsi_roi_merge(ctrl, &roi);
+		other = mdss_dsi_get_ctrl_by_index(DSI_CTRL_LEFT);
+		c_roi = &other->roi;
+	} else {
+		c_roi = &ctrl->roi;
+		roi = *p_roi;
+	}
+
+	/* roi had changed, do col_page update */
 	if (mdss_dsi_sync_wait_enable(ctrl) ||
-				!mdss_rect_cmp(c_roi, p_roi)) {
+				!mdss_rect_cmp(c_roi, &roi)) {
 		pr_debug("%s: ndx=%d x=%d y=%d w=%d h=%d\n",
 				__func__, ctrl->ndx, p_roi->x,
 				p_roi->y, p_roi->w, p_roi->h);
 
-		*c_roi = *p_roi;	/* keep to ctrl */
+		*c_roi = roi; /* keep to ctrl */
 		if (c_roi->w == 0 || c_roi->h == 0) {
 			/* no new frame update */
 			pr_debug("%s: ctrl=%d, no partial roi set\n",
@@ -872,11 +944,6 @@ static int mdss_dsi_set_col_page_addr(struct mdss_panel_data *pdata)
 			if (!mdss_dsi_sync_wait_enable(ctrl))
 				return 0;
 		}
-
-		roi = *c_roi;
-
-		if (pinfo->partial_update_roi_merge)
-			left_or_both = mdss_dsi_roi_merge(ctrl, &roi);
 
 		if (pinfo->partial_update_dcs_cmd_by_left) {
 			if (left_or_both && ctrl->ndx == DSI_CTRL_RIGHT) {
@@ -1039,6 +1106,7 @@ static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
 	set_backlight_pwm(1);
 
 	mdss_dsi_update_cabc_level(ctrl);
+	mdss_dsi_update_color_enhance(ctrl);
     mdss_dsi_update_gamma_index(ctrl);
 
 	if (ctrl->calibration_available && ctrl->calibration_cmds.cmd_cnt)
@@ -1843,6 +1911,12 @@ static int mdss_panel_parse_dt(struct device_node *np,
 	of_property_read_u32(np, "qcom,mdss-dsi-bl-sre-level", &pinfo->sre_bl_threshold);
 
 	of_property_read_u32(np, "qcom,mdss-dsi-bl-cabc-max-level", &pinfo->cabc_bl_max);
+
+	rc = mdss_dsi_parse_dcs_cmds(np, &color_enhance_on_sequence,
+		"qcom,mdss-dsi-color-enhance-on-command", "qcom,mdss-dsi-off-command-state");
+	rc = rc && mdss_dsi_parse_dcs_cmds(np, &color_enhance_off_sequence,
+		"qcom,mdss-dsi-color-enhance-off-command", "qcom,mdss-dsi-off-command-state");
+	pinfo->color_enhance_available = (rc == 0);
 
 	rc = mdss_dsi_parse_dcs_cmds(np, &ctrl_pdata->calibration_cmds,
 		"qcom,mdss-dsi-calibration-command", "qcom,mdss-dsi-calibration-command-state");

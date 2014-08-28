@@ -1663,17 +1663,14 @@ static void mdss_mdp_ctl_split_display_enable(int enable,
 		if (main_ctl->opmode & MDSS_MDP_CTL_OP_CMD_MODE) {
 			upper |= BIT(1);
 			lower |= BIT(1);
-
-			/* interface controlling sw trigger */
-			if (main_ctl->intf_num == MDSS_MDP_INTF2)
-				upper |= BIT(4);
-			else
-				upper |= BIT(8);
-		} else { /* video mode */
-			if (main_ctl->intf_num == MDSS_MDP_INTF2)
-				lower |= BIT(4);
-			else
-				lower |= BIT(8);
+		}
+		/* interface controlling sw trigger (cmd & video mode)*/
+		if (main_ctl->intf_num == MDSS_MDP_INTF2) {
+			lower |= BIT(4);
+			upper |= BIT(4);
+		} else {
+			lower |= BIT(8);
+			upper |= BIT(8);
 		}
 	}
 	MDSS_MDP_REG_WRITE(MDSS_MDP_REG_SPLIT_DISPLAY_UPPER_PIPE_CTRL, upper);
@@ -1776,6 +1773,7 @@ void mdss_mdp_ctl_restore(void)
 		if (ctl->restore_fnc)
 			ctl->restore_fnc(ctl);
 	}
+	mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_OFF, false);
 }
 
 static int mdss_mdp_ctl_start_sub(struct mdss_mdp_ctl *ctl, bool handoff)
@@ -2040,19 +2038,17 @@ void mdss_mdp_set_roi(struct mdss_mdp_ctl *ctl,
 	r_roi.w = data->r_roi.w;
 	r_roi.h = data->r_roi.h;
 
-
 	/* Reset ROI when we have (1) invalid ROI (2) feature disabled */
 	if ((!l_roi.w && l_roi.h) || (l_roi.w && !l_roi.h) ||
 		(!r_roi.w && r_roi.h) || (r_roi.w && !r_roi.h) ||
 		(!l_roi.w && !l_roi.h && !r_roi.w && !r_roi.h) ||
 		!ctl->panel_data->panel_info.partial_update_enabled) {
 		l_roi = (struct mdss_rect)
-		{0, 0, ctl->mixer_left->width,
-			ctl->mixer_left->height};
+		{0, 0, ctl->mixer_left->width, ctl->mixer_left->height};
 
 		if (ctl->mixer_right) {
 			r_roi = (struct mdss_rect)
-			{0, 0, ctl->mixer_right->width,
+				{0, 0, ctl->mixer_right->width,
 				ctl->mixer_right->height};
 		}
 	}

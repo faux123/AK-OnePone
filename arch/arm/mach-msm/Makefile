@@ -39,7 +39,7 @@ obj-$(CONFIG_ARCH_MSM7X27A) += perf_event_msm_pl310.o
 obj-$(CONFIG_ARCH_MSM9625) += perf_event_msm_pl310.o
 obj-$(CONFIG_ARCH_MSM8625) += perf_event_msm_pl310.o
 obj-$(CONFIG_ARCH_MSM9615) += perf_event_msm_pl310.o
-obj-$(CONFIG_DEBUG_FS) += perf_debug.o
+#obj-$(CONFIG_DEBUG_FS) += perf_debug.o
 endif
 
 ifndef CONFIG_MSM_SMP

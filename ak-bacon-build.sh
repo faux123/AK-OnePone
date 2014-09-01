@@ -20,14 +20,6 @@ BASE_AK_VER="ak"
 VER=".035_b09.opo.cm11"
 AK_VER="$BASE_AK_VER$VER"
 
-# Vars
-export LOCALVERSION=~`echo $AK_VER`
-export CROSS_COMPILE=${HOME}/android/AK-linaro/4.8.4-2014.08.20140901.CR83/bin/arm-cortex_a15-linux-gnueabihf-
-export ARCH=arm
-export SUBARCH=arm
-export KBUILD_BUILD_USER=ak
-export KBUILD_BUILD_HOST=kernel
-
 # Paths
 KERNEL_DIR=`pwd`
 REPACK_DIR="${HOME}/android/AK-OnePone-AnyKernel"
@@ -35,6 +27,16 @@ PATCH_DIR="${HOME}/android/AK-OnePone-AnyKernel/patch"
 MODULES_DIR="${HOME}/android/AK-OnePone-AnyKernel/patch/modules"
 ZIP_MOVE="${HOME}/android/AK-releases"
 ZIMAGE_DIR="${HOME}/android/AK-OnePone/arch/arm/boot"
+TOOLCHAIN="${HOME}/android/AK-linaro/4.8.4-2014.08.20140901.CR83/bin/arm-cortex_a15-linux-gnueabihf-"
+TOOLCHAIN_STRIP="${HOME}/android/AK-linaro/4.8.4-2014.08.20140901.CR83/bin/arm-cortex_a15-linux-gnueabihf-strip"
+
+# Vars
+export LOCALVERSION=~`echo $AK_VER`
+export CROSS_COMPILE=$TOOLCHAIN
+export ARCH=arm
+export SUBARCH=arm
+export KBUILD_BUILD_USER=ak
+export KBUILD_BUILD_HOST=kernel
 
 # Functions
 function clean_all {
@@ -53,6 +55,7 @@ function make_kernel {
 function make_modules {
 		rm `echo $MODULES_DIR"/*"`
 		find $KERNEL_DIR -name '*.ko' -exec cp -v {} $MODULES_DIR \;
+		$TOOLCHAIN_STRIP --strip-debug $MODULES_DIR/*.ko
 }
 
 function make_dtb {

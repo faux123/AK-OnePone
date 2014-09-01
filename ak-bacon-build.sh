@@ -27,8 +27,8 @@ PATCH_DIR="${HOME}/android/AK-OnePone-AnyKernel/patch"
 MODULES_DIR="${HOME}/android/AK-OnePone-AnyKernel/patch/modules"
 ZIP_MOVE="${HOME}/android/AK-releases"
 ZIMAGE_DIR="${HOME}/android/AK-OnePone/arch/arm/boot"
-TOOLCHAIN="${HOME}/android/AK-linaro/4.8.4-2014.08.20140901.CR83/bin/arm-cortex_a15-linux-gnueabihf-"
-TOOLCHAIN_STRIP="${HOME}/android/AK-linaro/4.8.4-2014.08.20140901.CR83/bin/arm-cortex_a15-linux-gnueabihf-strip"
+TOOLCHAIN="${HOME}/android/AK-linaro/4.7.4-2014.04.20140418.CR83/bin/arm-cortex_a15-linux-gnueabihf-"
+TOOLCHAIN_STRIP="${HOME}/android/AK-linaro/4.7.4-2014.04.20140418.CR83/bin/arm-cortex_a15-linux-gnueabihf-strip"
 
 # Vars
 export LOCALVERSION=~`echo $AK_VER`

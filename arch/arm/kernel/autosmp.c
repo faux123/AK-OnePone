@@ -136,8 +136,9 @@ static void asmp_power_suspend(struct power_suspend *h) {
 	/* suspend main work thread */
 	if (enabled)
 		cancel_delayed_work_sync(&asmp_work);
-
+#if DEBUG
 	pr_info(ASMP_TAG"suspended\n");
+#endif
 }
 
 static void __cpuinit asmp_power_resume(struct power_suspend *h) {
@@ -153,8 +154,9 @@ static void __cpuinit asmp_power_resume(struct power_suspend *h) {
 	if (enabled)
 		queue_delayed_work(asmp_workq, &asmp_work,
 				msecs_to_jiffies(asmp_param.delay));
-
+#if DEBUG
 	pr_info(ASMP_TAG"resumed\n");
+#endif
 }
 
 static struct power_suspend __refdata asmp_power_suspend_handler = {
@@ -170,13 +172,17 @@ static int __cpuinit set_enabled(const char *val, const struct kernel_param *kp)
 	if (enabled) {
 		queue_delayed_work(asmp_workq, &asmp_work,
 				msecs_to_jiffies(asmp_param.delay));
+#if DEBUG
 		pr_info(ASMP_TAG"enabled\n");
+#endif
 	} else {
 		cancel_delayed_work_sync(&asmp_work);
 		for (cpu = 1; cpu < nr_cpu_ids; cpu++)
 			if (!cpu_online(cpu))
 				cpu_up(cpu);
+#if DEBUG
 		pr_info(ASMP_TAG"disabled\n");
+#endif
 	}
 	return ret;
 }
@@ -307,8 +313,9 @@ static int __init asmp_init(void) {
 #endif
 	} else
 		pr_warn(ASMP_TAG"ERROR, create sysfs kobj");
-
+#if DEBUG
 	pr_info(ASMP_TAG"initialized\n");
+#endif
 	return 0;
 }
 late_initcall(asmp_init);

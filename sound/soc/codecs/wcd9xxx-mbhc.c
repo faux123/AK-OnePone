@@ -9,7 +9,7 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  */
-#define DEBUG
+#define DEBUG 0
 
 #include <linux/module.h>
 #include <linux/init.h>
@@ -4611,10 +4611,10 @@ static int wcd9xxx_event_notify(struct notifier_block *self, unsigned long val,
 	struct wcd9xxx_mbhc *mbhc = ((struct wcd9xxx_resmgr *)data)->mbhc;
 	struct snd_soc_codec *codec = mbhc->codec;
 	enum wcd9xxx_notify_event event = (enum wcd9xxx_notify_event)val;
-
+#if DEBUG
 	pr_debug("%s: enter event %s(%d)\n", __func__,
 		 wcd9xxx_get_event_string(event), event);
-
+#endif
 	mutex_lock(&mbhc->mbhc_lock);
 	switch (event) {
 	/* MICBIAS usage change */
@@ -4664,8 +4664,10 @@ static int wcd9xxx_event_notify(struct notifier_block *self, unsigned long val,
 		if (mbhc->micbias_enable && mbhc->polling_active &&
 		    !(snd_soc_read(mbhc->codec, mbhc->mbhc_bias_regs.ctl_reg)
 	            & 0x80)) {
+#if DEBUG
 			pr_debug("%s:Micbias turned off by recording, set up again",
 				 __func__);
+#endif
 			snd_soc_update_bits(codec, mbhc->mbhc_bias_regs.ctl_reg,
 					    0x80, 0x80);
 		}
@@ -4810,9 +4812,9 @@ static int wcd9xxx_event_notify(struct notifier_block *self, unsigned long val,
 		ret = -EINVAL;
 	}
 	mutex_unlock(&mbhc->mbhc_lock);
-
+#if DEBUG
 	pr_debug("%s: leave\n", __func__);
-
+#endif
 	return ret;
 }
 

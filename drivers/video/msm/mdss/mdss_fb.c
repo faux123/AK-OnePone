@@ -220,6 +220,11 @@ static void mdss_fb_set_bl_brightness(struct led_classdev *led_cdev,
 	if (!IS_CALIB_MODE_BL(mfd) && (!mfd->ext_bl_ctrl || !value ||
 							!mfd->bl_level)) {
 		mutex_lock(&mfd->bl_lock);
+		/* If this is the first backlight write after powering on,
+		   wait until the first frame is committed to avoid showing
+		   any garbage left over in frame memory */
+		if (!mfd->bl_level && value && mfd->panel.type == MIPI_CMD_PANEL)
+			mfd->bl_updated = false;
 		mdss_fb_set_backlight(mfd, bl_lvl);
 		mutex_unlock(&mfd->bl_lock);
 	}
@@ -680,14 +685,11 @@ static struct attribute *mdss_fb_attrs[] = {
 	&dev_attr_show_blank_event.attr,
 	&dev_attr_idle_time.attr,
 	&dev_attr_idle_notify.attr,
+	&dev_attr_msm_fb_panel_info.attr,
 #ifdef CONFIG_MACH_OPPO
-    &dev_attr_cabc.attr,
 	&dev_attr_gamma.attr,
     &dev_attr_panel_calibration.attr,
-	&dev_attr_sre.attr,
-	&dev_attr_color_enhance.attr,
 #endif
-	&dev_attr_msm_fb_panel_info.attr,
 	NULL,
 };
 
@@ -697,11 +699,39 @@ static struct attribute_group mdss_fb_attr_group = {
 
 static int mdss_fb_create_sysfs(struct msm_fb_data_type *mfd)
 {
-	int rc;
+	int rc = 0;
+
+	if (mfd == NULL)
+		goto sysfs_err;
 
 	rc = sysfs_create_group(&mfd->fbi->dev->kobj, &mdss_fb_attr_group);
 	if (rc)
-		pr_err("sysfs group creation failed, rc=%d\n", rc);
+		goto sysfs_err;
+
+#ifdef CONFIG_MACH_OPPO
+	if (mfd->panel_info->cabc_available) {
+		rc = sysfs_create_file(&mfd->fbi->dev->kobj, &dev_attr_cabc.attr);
+		if (rc)
+			goto sysfs_err;
+
+		if (mfd->panel_info->sre_available) {
+			rc = sysfs_create_file(&mfd->fbi->dev->kobj, &dev_attr_sre.attr);
+			if (rc)
+				goto sysfs_err;
+		}
+	}
+
+	if (mfd->panel_info->color_enhance_available) {
+		rc = sysfs_create_file(&mfd->fbi->dev->kobj, &dev_attr_color_enhance.attr);
+		if (rc)
+			goto sysfs_err;
+	}
+#endif
+
+	return rc;
+
+sysfs_err:
+	pr_err("%s: sysfs group creation failed, rc=%d", __func__, rc);
 	return rc;
 }
 
@@ -795,8 +825,10 @@ static int mdss_fb_probe(struct platform_device *pdev)
 		backlight_led.max_brightness = mfd->panel_info->brightness_max;
 		if (led_classdev_register(&pdev->dev, &backlight_led))
 			pr_err("led_classdev_register failed\n");
-		else
+		else {
 			lcd_backlight_registered = 1;
+			mfd->bl_level = backlight_led.brightness;
+		}
 	}
 
 	mdss_fb_create_sysfs(mfd);

@@ -17,7 +17,7 @@ DEFCONFIG="ak_bacon_defconfig"
 
 # Kernel Details
 BASE_AK_VER="ak"
-VER=".036.opo.cm11"
+VER=".037.opo.cm11"
 AK_VER="$BASE_AK_VER$VER"
 
 # Paths

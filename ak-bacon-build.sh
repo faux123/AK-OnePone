@@ -28,7 +28,6 @@ MODULES_DIR="${HOME}/android/AK-OnePone-AnyKernel/patch/modules"
 ZIP_MOVE="${HOME}/android/AK-releases"
 ZIMAGE_DIR="${HOME}/android/AK-OnePone/arch/arm/boot"
 TOOLCHAIN="${HOME}/android/AK-linaro/4.7.4-2014.04.20140418.CR83/bin/arm-cortex_a15-linux-gnueabihf-"
-TOOLCHAIN_STRIP="${HOME}/android/AK-linaro/4.7.4-2014.04.20140418.CR83/bin/arm-cortex_a15-linux-gnueabihf-strip"
 
 # Vars
 export LOCALVERSION=~`echo $AK_VER`
@@ -55,7 +54,6 @@ function make_kernel {
 function make_modules {
 		rm `echo $MODULES_DIR"/*"`
 		find $KERNEL_DIR -name '*.ko' -exec cp -v {} $MODULES_DIR \;
-		$TOOLCHAIN_STRIP --strip-debug $MODULES_DIR/*.ko
 }
 
 function make_dtb {

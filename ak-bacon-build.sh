@@ -22,7 +22,7 @@ AK_VER="$BASE_AK_VER$VER"
 
 # Vars
 export LOCALVERSION=~`echo $AK_VER`
-export CROSS_COMPILE=${HOME}/android/AK-linaro/4.7.4-2014.04.20140418.CR83/bin/arm-cortex_a15-linux-gnueabihf-
+export CROSS_COMPILE=${HOME}/android/AK-sm-arm-eabi-4.8/bin/arm-eabi-
 export ARCH=arm
 export SUBARCH=arm
 export KBUILD_BUILD_USER=ak

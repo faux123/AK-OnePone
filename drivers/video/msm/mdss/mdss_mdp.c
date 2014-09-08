@@ -705,8 +705,11 @@ int mdss_iommu_ctrl(int enable)
 		__builtin_return_address(0), enable, mdata->iommu_ref_cnt);
 
 	if (enable) {
-
-		if (mdata->iommu_ref_cnt == 0)
+		/*
+		 * delay iommu attach until continous splash screen has
+		 * finished handoff, as it may still be working with phys addr
+		 */
+		if (!mdata->iommu_attached && !mdata->handoff_pending)
 			rc = mdss_iommu_attach(mdata);
 		mdata->iommu_ref_cnt++;
 	} else {
@@ -2647,6 +2650,8 @@ vreg_set_voltage_fail:
 
 void mdss_mdp_batfet_ctrl(struct mdss_data_type *mdata, int enable)
 {
+	int ret;
+
 	if (!mdata->batfet_required)
 		return;
 
@@ -2664,6 +2669,14 @@ void mdss_mdp_batfet_ctrl(struct mdss_data_type *mdata, int enable)
 			pr_debug("Batfet regulator disable w/o enable\n");
 			return;
 		}
+	}
+
+	if (enable) {
+		ret = regulator_enable(mdata->batfet);
+		if (ret)
+			pr_err("regulator_enable failed\n");
+	} else {
+		regulator_disable(mdata->batfet);
 	}
 }
 

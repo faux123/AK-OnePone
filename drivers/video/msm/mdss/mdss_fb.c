@@ -220,6 +220,11 @@ static void mdss_fb_set_bl_brightness(struct led_classdev *led_cdev,
 	if (!IS_CALIB_MODE_BL(mfd) && (!mfd->ext_bl_ctrl || !value ||
 							!mfd->bl_level)) {
 		mutex_lock(&mfd->bl_lock);
+		/* If this is the first backlight write after powering on,
+		   wait until the first frame is committed to avoid showing
+		   any garbage left over in frame memory */
+		if (!mfd->bl_level && value && mfd->panel.type == MIPI_CMD_PANEL)
+			mfd->bl_updated = false;
 		mdss_fb_set_backlight(mfd, bl_lvl);
 		mutex_unlock(&mfd->bl_lock);
 	}
@@ -334,6 +339,7 @@ static ssize_t mdss_fb_store_split(struct device *dev,
 extern int mdss_dsi_panel_set_cabc(struct mdss_panel_data *panel_data, int level);
 extern int mdss_dsi_panel_set_gamma_index(struct mdss_panel_data *panel_data, int index);
 extern int mdss_dsi_panel_set_sre(struct mdss_panel_data *panel_data, bool enable);
+extern int mdss_dsi_panel_set_color_enhance(struct mdss_panel_data *panel_data, bool enable);
 
 static ssize_t mdss_get_cabc(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -381,6 +387,29 @@ static ssize_t mdss_set_sre(struct device *dev,
 	return count;
 }
 
+static ssize_t mdss_get_color_enhance(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+	struct mdss_panel_data *pdata = dev_get_platdata(&mfd->pdev->dev);
+	return sprintf(buf, "%d\n", pdata->panel_info.color_enhance_enabled);
+}
+
+static ssize_t mdss_set_color_enhance(struct device *dev,
+							   struct device_attribute *attr,
+							   const char *buf, size_t count)
+{
+	int value = 0;
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+	struct mdss_panel_data *pdata = dev_get_platdata(&mfd->pdev->dev);
+
+	sscanf(buf, "%du", &value);
+	mdss_dsi_panel_set_color_enhance(pdata, value > 0);
+	return count;
+}
+
 static ssize_t mdss_get_gamma_index(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -407,6 +436,7 @@ static ssize_t mdss_set_gamma_index(struct device *dev,
 static DEVICE_ATTR(cabc, S_IRUGO | S_IWUSR | S_IWGRP, mdss_get_cabc, mdss_set_cabc);
 static DEVICE_ATTR(gamma, S_IRUGO | S_IWUSR | S_IWGRP, mdss_get_gamma_index, mdss_set_gamma_index);
 static DEVICE_ATTR(sre, S_IRUGO | S_IWUSR | S_IWGRP, mdss_get_sre, mdss_set_sre);
+static DEVICE_ATTR(color_enhance, S_IRUGO | S_IWUSR | S_IWGRP, mdss_get_color_enhance, mdss_set_color_enhance);
 
 extern int mdss_dsi_panel_get_panel_calibration(
 	struct mdss_panel_data *pdata, char *buf);
@@ -655,13 +685,11 @@ static struct attribute *mdss_fb_attrs[] = {
 	&dev_attr_show_blank_event.attr,
 	&dev_attr_idle_time.attr,
 	&dev_attr_idle_notify.attr,
+	&dev_attr_msm_fb_panel_info.attr,
 #ifdef CONFIG_MACH_OPPO
-    &dev_attr_cabc.attr,
 	&dev_attr_gamma.attr,
     &dev_attr_panel_calibration.attr,
-	&dev_attr_sre.attr,
 #endif
-	&dev_attr_msm_fb_panel_info.attr,
 	NULL,
 };
 
@@ -671,11 +699,39 @@ static struct attribute_group mdss_fb_attr_group = {
 
 static int mdss_fb_create_sysfs(struct msm_fb_data_type *mfd)
 {
-	int rc;
+	int rc = 0;
+
+	if (mfd == NULL)
+		goto sysfs_err;
 
 	rc = sysfs_create_group(&mfd->fbi->dev->kobj, &mdss_fb_attr_group);
 	if (rc)
-		pr_err("sysfs group creation failed, rc=%d\n", rc);
+		goto sysfs_err;
+
+#ifdef CONFIG_MACH_OPPO
+	if (mfd->panel_info->cabc_available) {
+		rc = sysfs_create_file(&mfd->fbi->dev->kobj, &dev_attr_cabc.attr);
+		if (rc)
+			goto sysfs_err;
+
+		if (mfd->panel_info->sre_available) {
+			rc = sysfs_create_file(&mfd->fbi->dev->kobj, &dev_attr_sre.attr);
+			if (rc)
+				goto sysfs_err;
+		}
+	}
+
+	if (mfd->panel_info->color_enhance_available) {
+		rc = sysfs_create_file(&mfd->fbi->dev->kobj, &dev_attr_color_enhance.attr);
+		if (rc)
+			goto sysfs_err;
+	}
+#endif
+
+	return rc;
+
+sysfs_err:
+	pr_err("%s: sysfs group creation failed, rc=%d", __func__, rc);
 	return rc;
 }
 
@@ -769,8 +825,10 @@ static int mdss_fb_probe(struct platform_device *pdev)
 		backlight_led.max_brightness = mfd->panel_info->brightness_max;
 		if (led_classdev_register(&pdev->dev, &backlight_led))
 			pr_err("led_classdev_register failed\n");
-		else
+		else {
 			lcd_backlight_registered = 1;
+			mfd->bl_level = backlight_led.brightness;
+		}
 	}
 
 	mdss_fb_create_sysfs(mfd);
@@ -2165,12 +2223,9 @@ static void mdss_fb_power_setting_idle(struct msm_fb_data_type *mfd)
 	}
 }
 
-int mdss_fb_wait_for_fence(struct msm_sync_pt_data *sync_pt_data)
+static void __mdss_fb_copy_fence(struct msm_sync_pt_data *sync_pt_data,
+	struct sync_fence **fences, u32 *fence_cnt)
 {
-	struct sync_fence *fences[MDP_MAX_FENCE_FD];
-	int fence_cnt;
-	int i, ret = 0;
-
 	pr_debug("%s: wait for fences\n", sync_pt_data->fence_name);
 
 	mutex_lock(&sync_pt_data->sync_mutex);
@@ -2178,12 +2233,18 @@ int mdss_fb_wait_for_fence(struct msm_sync_pt_data *sync_pt_data)
 	 * Assuming that acq_fen_cnt is sanitized in bufsync ioctl
 	 * to check for sync_pt_data->acq_fen_cnt <= MDP_MAX_FENCE_FD
 	 */
-	fence_cnt = sync_pt_data->acq_fen_cnt;
+	*fence_cnt = sync_pt_data->acq_fen_cnt;
 	sync_pt_data->acq_fen_cnt = 0;
-	if (fence_cnt)
+	if (*fence_cnt)
 		memcpy(fences, sync_pt_data->acq_fen,
-				fence_cnt * sizeof(struct sync_fence *));
+				*fence_cnt * sizeof(struct sync_fence *));
 	mutex_unlock(&sync_pt_data->sync_mutex);
+}
+
+static void __mdss_fb_wait_for_fence_sub(struct msm_sync_pt_data *sync_pt_data,
+	struct sync_fence **fences, int fence_cnt)
+{
+	int i, ret = 0;
 
 	/* buf sync */
 	for (i = 0; i < fence_cnt && !ret; i++) {
@@ -2206,6 +2267,19 @@ int mdss_fb_wait_for_fence(struct msm_sync_pt_data *sync_pt_data)
 		for (; i < fence_cnt; i++)
 			sync_fence_put(fences[i]);
 	}
+
+}
+
+int mdss_fb_wait_for_fence(struct msm_sync_pt_data *sync_pt_data)
+{
+	struct sync_fence *fences[MDP_MAX_FENCE_FD];
+	int fence_cnt = 0;
+
+	__mdss_fb_copy_fence(sync_pt_data, fences, &fence_cnt);
+
+	if (fence_cnt)
+		__mdss_fb_wait_for_fence_sub(sync_pt_data,
+			fences, fence_cnt);
 
 	return fence_cnt;
 }
@@ -2282,6 +2356,7 @@ static int __mdss_fb_sync_buf_done_callback(struct notifier_block *p,
 {
 	struct msm_sync_pt_data *sync_pt_data;
 	struct msm_fb_data_type *mfd;
+	int fence_cnt;
 
 	sync_pt_data = container_of(p, struct msm_sync_pt_data, notifier);
 	mfd = container_of(sync_pt_data, struct msm_fb_data_type,
@@ -2296,8 +2371,13 @@ static int __mdss_fb_sync_buf_done_callback(struct notifier_block *p,
 		}
 		break;
 	case MDP_NOTIFY_FRAME_READY:
-		if (sync_pt_data->async_wait_fences)
-			mdss_fb_wait_for_fence(sync_pt_data);
+		if (sync_pt_data->async_wait_fences &&
+			sync_pt_data->temp_fen_cnt) {
+			fence_cnt = sync_pt_data->temp_fen_cnt;
+			sync_pt_data->temp_fen_cnt = 0;
+			__mdss_fb_wait_for_fence_sub(sync_pt_data,
+				sync_pt_data->temp_fen, fence_cnt);
+		}
 		break;
 	case MDP_NOTIFY_FRAME_FLUSHED:
 		pr_debug("%s: frame flushed\n", sync_pt_data->fence_name);
@@ -2311,7 +2391,13 @@ static int __mdss_fb_sync_buf_done_callback(struct notifier_block *p,
 		pr_debug("%s: frame done\n", sync_pt_data->fence_name);
 		mdss_fb_signal_timeline(sync_pt_data);
 		break;
-	case MDP_NOTIFY_FRAME_START:
+	case MDP_NOTIFY_FRAME_CFG_DONE:
+		if (sync_pt_data->async_wait_fences)
+			__mdss_fb_copy_fence(sync_pt_data,
+					sync_pt_data->temp_fen,
+					&sync_pt_data->temp_fen_cnt);
+		break;
+	case MDP_NOTIFY_FRAME_CTX_DONE:
 		mdss_fb_release_kickoff(mfd);
 		break;
 	}
